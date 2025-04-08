@@ -17,18 +17,18 @@ from telegram.ext import (
 # === Настройки ===
 TOKEN = "7041529119:AAFNcjZ5g_SVtxMBKjyCaIXeZdm3-tYKc1A"
 EXCEL_URL = "https://www.ailita.ru/menu/download/docs/11.xls"
-DOWNLOAD_TIME = "20:41"  # по локальному времени
+DOWNLOAD_TIME = "20:55"  # по локальному времени
+CHAT_ID = 376478334  # твой Telegram chat_id
 
 # === Инициализация ===
 os.makedirs("storage", exist_ok=True)
 logging.basicConfig(level=logging.INFO)
 
 
-# === Вспомогательная функция ===
-async def process_search(app, chat_id):
+# === Поиск совпадений ===
+async def process_search(app, chat_id, input_path="storage/input_main.txt"):
     try:
         xls_path = "storage/global_excel.xls"
-        input_path = "storage/input-main.txt"
 
         if not os.path.exists(xls_path):
             await app.bot.send_message(chat_id, "❗ Excel файл не найден.")
@@ -80,16 +80,28 @@ async def process_search(app, chat_id):
         await app.bot.send_message(chat_id, f"⚠️ Ошибка: {e}")
 
 
-# === Telegram-команды ===
+# === Команды ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 Привет! Бот загружает Excel автоматически каждый день в 10:00.\n"
-                                    "Отправь input_main.txt вручную, если ещё не отправлял.")
+    await update.message.reply_text("👋 Привет! Excel обновляется автоматически в 10:00. "
+                                    "Отправь input_main.txt, чтобы бот мог выполнять поиск.")
+
+
+async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = " ".join(context.args).strip().lower()
+    if not query:
+        await update.message.reply_text("❗ Используй: /search <твой запрос>")
+        return
+
+    input_path = "storage/input_temp.txt"
+    with open(input_path, "w", encoding="utf-8") as f:
+        f.write(query)
+
+    await process_search(context, update.message.chat_id, input_path=input_path)
 
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file = await update.message.document.get_file()
     filename = update.message.document.file_name
-    path = ""
 
     if filename.endswith(".xls"):
         path = "storage/global_excel.xls"
@@ -105,8 +117,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await process_search(context, update.message.chat_id)
 
 
-# === Автообновление Excel ===
-# === Автообновление Excel ===
+# === Задача автозагрузки ===
 async def scheduled_download(app):
     now = datetime.now().strftime("%H:%M")
     if now == DOWNLOAD_TIME:
@@ -117,33 +128,19 @@ async def scheduled_download(app):
                     f.write(r.content)
                 print("✅ Excel скачан и обновлён")
 
-                # Замените на свой chat_id
-                chat_id = 376478334
-
-                # Отправка сообщения
                 await app.bot.send_message(
-                    chat_id=chat_id,
+                    chat_id=CHAT_ID,
                     text="✅ Excel обновлён! Запускаю поиск по input_main.txt..."
                 )
-
-                # Запуск поиска
-                fake_update = type("obj", (object,), {
-                    "message": type("obj", (object,), {
-                        "chat_id": chat_id
-                    })()
-                })
-                await process_search(app, fake_update.message.chat_id)
-
+                await process_search(app, CHAT_ID)
             else:
                 print(f"❌ Ошибка скачивания Excel: статус {r.status_code}")
         except Exception as e:
             print(f"⚠️ Ошибка при скачивании Excel: {e}")
 
 
-
-# === Основной запуск ===
+# === Запуск приложения ===
 async def post_init(app):
-    # Устанавливаем задачу каждую минуту проверять время
     async def schedule_loop():
         while True:
             await scheduled_download(app)
@@ -154,8 +151,8 @@ async def post_init(app):
 def main():
     app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("search", search_command))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-
     print("🚀 Бот работает")
     app.run_polling()
 
