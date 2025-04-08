@@ -2,5 +2,7 @@ python-telegram-bot==20.3
 pandas
 pyexcel
 pyexcel-xls
+pyexcel-xlsx
+pyexcel-xlsxw
 openpyxl
 requests

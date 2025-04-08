@@ -17,16 +17,40 @@ from telegram.ext import (
 # === Настройки ===
 TOKEN = "7041529119:AAFNcjZ5g_SVtxMBKjyCaIXeZdm3-tYKc1A"
 EXCEL_URL = "https://www.ailita.ru/menu/download/docs/11.xls"
-DOWNLOAD_TIME = "20:55"  # по локальному времени
+DOWNLOAD_TIME = "11:00"  # по локальному времени
 CHAT_ID = 376478334  # твой Telegram chat_id
+
+
+# === Инструкция ===
+RULES_TEXT = """📌 Инструкция по использованию Telegram-бота:
+/start — приветствие и краткая справка.
+/rules или /r — полная инструкция по использованию бота.
+/search [запрос] или /s [запрос] — поиск по Excel по одному запросу (не влияет на основной файл).
+Пример: /s редис
+/input [слова] или /i [слова] — добавить позиции в конец основного файла input_main.txt.
+Пример: /i укроп, базилик
+/print или /p — показать текущее содержимое input_main.txt.
+/edit_input [слова] или /e [слова] — полностью заменить input_main.txt на новый список.
+Пример: /e томат, морковь, кабачок
+
+Важно:
+
+Бот каждый день в 11:00 (по серверу) скачивает Excel и запускает автоматический поиск по input_main.txt.
+
+Можно загружать Excel вручную — тогда он будет использоваться с приоритетом и перезапишет авто-скачанный файл.
+Название файла с запросами должно быть строго input_main.txt, загрузка файла в чат-бот перезапишет внутренний файл input_main.txt аналогично команде /e .
+"""
 
 # === Инициализация ===
 os.makedirs("storage", exist_ok=True)
 logging.basicConfig(level=logging.INFO)
 
 
+manual_excel_uploaded = False
+# === Скачивание Excel ===
+
 # === Поиск совпадений ===
-async def process_search(app, chat_id, input_path="storage/input_main.txt"):
+async def process_search(app, chat_id, input_path="storage/input_main.txt", manual=False):
     try:
         xls_path = "storage/global_excel.xls"
 
@@ -67,23 +91,42 @@ async def process_search(app, chat_id, input_path="storage/input_main.txt"):
 
         results = df[mask]
 
+        MAX_MESSAGE_LENGTH = 4000  # немного меньше лимита, чтобы избежать ошибок
+
+# ...
         if results.empty:
             await app.bot.send_message(chat_id, "❌ Совпадений не найдено.")
         else:
-            msg = "📥 Использован автоскачанный Excel\n🔍 Найдены совпадения:\n"
+            note = "ℹ️ Использован вручную загруженный Excel\n" if manual else "📥 Использован автоскачанный Excel\n"
             lines = [f"- {row['Код']} | {row['Название культуры, сорта']}" for _, row in results.iterrows()]
-            chunks = ["\n".join(lines[i:i + 80]) for i in range(0, len(lines), 80)]
-            for chunk in chunks:
-                await app.bot.send_message(chat_id, msg + chunk)
+            
+            msg = note
+            for line in lines:
+                if len(msg) + len(line) + 1 > MAX_MESSAGE_LENGTH:
+                    await app.bot.send_message(chat_id, msg.strip())
+                    msg = ""  # начинаем новое сообщение
+                msg += line + "\n"
 
+            if msg.strip():  # не забываем отправить остаток
+                await app.bot.send_message(chat_id, msg.strip())
+        await app.bot.send_message(chat_id, "✅ Поиск завершён.")
     except Exception as e:
         await app.bot.send_message(chat_id, f"⚠️ Ошибка: {e}")
 
 
+
+
 # === Команды ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 Привет! Excel обновляется автоматически в 10:00. "
-                                    "Отправь input_main.txt, чтобы бот мог выполнять поиск.")
+    await update.message.reply_text(
+        "👋 Привет! Excel обновляется автоматически в 11:00.\n"
+        "Загружай Excel вручную, если нужно.\n"
+        "Команды: /search или /s для поиска, /rules или /r для инструкции."
+    )
+
+
+async def rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(RULES_TEXT)
 
 
 async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -96,50 +139,113 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     with open(input_path, "w", encoding="utf-8") as f:
         f.write(query)
 
-    await process_search(context, update.message.chat_id, input_path=input_path)
+    await process_search(context, update.message.chat_id, input_path=input_path, manual=manual_excel_uploaded)
 
+
+manual_excel_uploaded = False  # глобальный флаг, должен быть в начале файла
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global manual_excel_uploaded
     file = await update.message.document.get_file()
     filename = update.message.document.file_name
 
     if filename.endswith(".xls"):
         path = "storage/global_excel.xls"
         await file.download_to_drive(path)
+        manual_excel_uploaded = True
         await update.message.reply_text("✅ Excel загружен вручную.")
-        await process_search(context, update.message.chat_id)
+        if os.path.exists("storage/input_main.txt"):
+            await process_search(context, update.message.chat_id, manual=True)
 
     elif "input" in filename.lower():
         path = "storage/input_main.txt"
         await file.download_to_drive(path)
         await update.message.reply_text("✅ Input загружен как основной.")
         if os.path.exists("storage/global_excel.xls"):
-            await process_search(context, update.message.chat_id)
+            await process_search(context, update.message.chat_id, manual=manual_excel_uploaded)
+
+
+
 
 
 # === Задача автозагрузки ===
 async def scheduled_download(app):
+    global manual_excel_uploaded
     now = datetime.now().strftime("%H:%M")
+
     if now == DOWNLOAD_TIME:
         try:
             r = requests.get(EXCEL_URL)
             if r.status_code == 200:
                 with open("storage/global_excel.xls", "wb") as f:
                     f.write(r.content)
+                manual_excel_uploaded = False
                 print("✅ Excel скачан и обновлён")
 
                 await app.bot.send_message(
                     chat_id=CHAT_ID,
                     text="✅ Excel обновлён! Запускаю поиск по input_main.txt..."
                 )
-                await process_search(app, CHAT_ID)
+                await process_search(app, CHAT_ID, manual=False)
             else:
                 print(f"❌ Ошибка скачивания Excel: статус {r.status_code}")
         except Exception as e:
             print(f"⚠️ Ошибка при скачивании Excel: {e}")
 
+async def append_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = " ".join(context.args).strip().lower()
+    if not query:
+        await update.message.reply_text("❗ Используй: /i <позиции через запятую>")
+        return
 
-# === Запуск приложения ===
+    path = "storage/input_main.txt"
+    # Создаём файл, если его нет
+    if not os.path.exists(path):
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(query)
+    else:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write("," + query)
+
+    await update.message.reply_text("✅ Добавлено в input_main.txt:\n" + query)
+    # Запускаем поиск
+    await process_search(context, update.message.chat_id, manual=manual_excel_uploaded)
+
+async def show_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    path = "storage/input_main.txt"
+    if not os.path.exists(path):
+        await update.message.reply_text("❗ Файл input_main.txt не найден.")
+        return
+
+    with open(path, "r", encoding="utf-8") as f:
+        content = f.read().strip()
+
+    if not content:
+        await update.message.reply_text("⚠️ Файл input_main.txt пуст.")
+        return
+
+    await update.message.reply_text(f"📄 Содержимое input_main.txt:\n{content}")
+
+async def edit_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    new_text = " ".join(context.args).strip().lower()
+    if not new_text:
+        await update.message.reply_text("❗ Используй: /edit_input <новый список>")
+        return
+
+    path = "storage/input_main.txt"
+    os.makedirs("storage", exist_ok=True)
+
+    # Перезаписываем файл
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(new_text)
+
+    await update.message.reply_text(f"✏️ input_main.txt обновлён: {new_text}")
+
+    # Запускаем поиск
+    await process_search(context, update.message.chat_id, manual=manual_excel_uploaded)
+
+
+# === Инициализация задачи ===
 async def post_init(app):
     async def schedule_loop():
         while True:
@@ -148,10 +254,23 @@ async def post_init(app):
     asyncio.create_task(schedule_loop())
 
 
+# === Запуск приложения ===
 def main():
     app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("rules", rules))
+    app.add_handler(CommandHandler("r", rules))
     app.add_handler(CommandHandler("search", search_command))
+    app.add_handler(CommandHandler("s", search_command))
+    app.add_handler(CommandHandler("i", append_input))
+    app.add_handler(CommandHandler("input", append_input))
+    app.add_handler(CommandHandler("p", show_input))
+    app.add_handler(CommandHandler("print", show_input))
+    app.add_handler(CommandHandler("edit_input", edit_input))
+    app.add_handler(CommandHandler("e", edit_input))
+
+
+
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     print("🚀 Бот работает")
     app.run_polling()
