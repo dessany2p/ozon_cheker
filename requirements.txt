@@ -7,4 +7,3 @@ pyexcel-xlsxw
 openpyxl
 requests
 pytz
-json

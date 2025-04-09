@@ -25,6 +25,22 @@ CHAT_ID = 376478334  # твой Telegram chat_id
 SETTINGS_FILE = "settings.json"
 # === Загрузка настроек ===
 
+def save_user_id(chat_id: int):
+    path = "storage/user_ids.json"
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                user_ids = json.load(f)
+        else:
+            user_ids = []
+    except Exception:
+        user_ids = []
+
+    if chat_id not in user_ids:
+        user_ids.append(chat_id)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(user_ids, f, indent=2, ensure_ascii=False)
+        logging.info(f"🔔 Добавлен новый пользователь в user_ids.json: {chat_id}")
 
 
 def load_settings():
@@ -156,11 +172,29 @@ async def process_search(app, chat_id, input_path="storage/input_main.txt", manu
 
 # === Команды ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.chat_id
+    os.makedirs("storage", exist_ok=True)
+
+    # Чтение существующих ID
+    file_path = "storage/user_ids.json"
+    if os.path.exists(file_path):
+        with open(file_path, "r", encoding="utf-8") as f:
+            users = json.load(f)
+    else:
+        users = []
+
+    # Добавление нового ID, если его нет
+    if user_id not in users:
+        users.append(user_id)
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(users, f, indent=2)
+
     await update.message.reply_text(
         f"👋 Привет! Excel обновляется автоматически в {DOWNLOAD_TIME}.\n"
         "Загружай Excel вручную, если нужно.\n"
         "Команды: /search или /s для поиска, /rules или /r для инструкции."
     )
+
 
 
 async def rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -260,19 +294,32 @@ async def scheduled_download(app):
                 settings["excel_last_status"] = f"успешно ({now})"
                 save_settings(settings)
 
-                await app.bot.send_message(
-                    chat_id=CHAT_ID,
-                    text=f"✅ Excel обновлён в {now} (МСК)! Запускаю поиск по input_main.txt..."
-                )
+                # Чтение всех зарегистрированных пользователей
+                try:
+                    with open("storage/user_ids.json", "r", encoding="utf-8") as f:
+                        user_ids = json.load(f)
+                except FileNotFoundError:
+                    user_ids = []
 
-                await process_search(app, CHAT_ID, manual=False)
-                logging.info("Поиск по input_main.txt завершён.")
+                if not user_ids:
+                    logging.warning("⚠️ Список user_ids пуст — уведомления не были отправлены.")
+                    print("⚠️ Список user_ids пуст — уведомления не были отправлены.")
+
+                for uid in user_ids:
+                    try:
+                        await app.bot.send_message(
+                            chat_id=uid,
+                            text=f"✅ Excel обновлён в {now} (МСК)! Запускаю поиск по input_main.txt..."
+                        )
+                    except Exception as e:
+                        logging.warning(f"❗ Не удалось отправить сообщение пользователю {uid}: {e}")
+
+
             else:
                 msg = f"❌ Ошибка скачивания Excel: статус {r.status_code}"
                 logging.warning(msg)
                 print(f"[{now}] ❌ {msg}")
 
-                # ❌ Обновляем статус
                 settings = load_settings()
                 settings["excel_last_status"] = f"ошибка {r.status_code} ({now})"
                 save_settings(settings)
@@ -284,12 +331,12 @@ async def scheduled_download(app):
             logging.exception(msg)
             print(f"[{now}] ⚠️ {msg}")
 
-            # ❌ Обновляем статус
             settings = load_settings()
             settings["excel_last_status"] = f"ошибка: {str(e)} ({now})"
             save_settings(settings)
 
             await app.bot.send_message(chat_id=CHAT_ID, text=msg)
+
 
 
 
