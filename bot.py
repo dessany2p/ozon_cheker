@@ -311,6 +311,8 @@ async def scheduled_download(app):
                             chat_id=uid,
                             text=f"✅ Excel обновлён в {now} (МСК)! Запускаю поиск по input_main.txt..."
                         )
+                        await process_search(app, uid, manual=False)
+                        logging.info(f"Поиск завершён для пользователя {uid}")
                     except Exception as e:
                         logging.warning(f"❗ Не удалось отправить сообщение пользователю {uid}: {e}")
 
@@ -445,6 +447,7 @@ async def set_download_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
         DOWNLOAD_TIME = new_time
 
         await update.message.reply_text(f"⏰ Время автозагрузки Excel обновлено на {new_time} (МСК)")
+        
     except ValueError:
         await update.message.reply_text("⚠️ Неверный формат времени. Используй HH:MM (например, 09:30)")
 
